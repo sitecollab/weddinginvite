@@ -2,7 +2,7 @@
   'use strict';
   var SUPABASE_URL = 'https://evqqmydxrbqryvxlpmsa.supabase.co';
   var SUPABASE_KEY = 'sb_publishable_5Gq3scUuu2cbg0_Fzkp6uQ_6OgQvk8b'; // public (publishable) key – data is protected by Row Level Security
-  var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true } });
+  var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, lock: function (_n, _t, fn) { return fn(); } } });
 
   var $ = function (id) { return document.getElementById(id); };
   var loginEl = $('login'), appEl = $('app'), listEl = $('list');
@@ -14,7 +14,7 @@
   function show(session) {
     var on = !!session;
     loginEl.hidden = on; appEl.hidden = !on;
-    if (on) loadGuests(); else { guests = []; listEl.textContent = ''; }
+    if (on) setTimeout(loadGuests, 0); else { guests = []; listEl.textContent = ''; }
   }
 
   /* ---------- auth ---------- */
@@ -34,11 +34,16 @@
   sb.auth.getSession().then(function (r) { show(r.data && r.data.session); });
 
   /* ---------- data ---------- */
+  function run(p) { // never let a request hang the UI
+    return Promise.race([p, new Promise(function (_, rej) { setTimeout(function () { rej(new Error('timeout')); }, 15000); })]);
+  }
+  var SLOW = 'That took too long. Please check your connection and try again.';
+
   function loadGuests() {
-    sb.from('guests').select('id,name,email,created_at').order('created_at', { ascending: false }).then(function (r) {
+    return run(sb.from('guests').select('id,name,email,created_at').order('created_at', { ascending: false })).then(function (r) {
       if (r.error) { say($('listMsg'), 'Couldn’t load the list. This account may not have access.', 'err'); return; }
       say($('listMsg'), ''); guests = r.data || []; render();
-    });
+    }, function () { say($('listMsg'), SLOW, 'err'); });
   }
 
   function friendly(err) {
@@ -52,33 +57,36 @@
     return '';
   }
 
-  $('addForm').addEventListener('submit', function (e) {
+  $('addForm').addEventListener('submit', async function (e) {
     e.preventDefault();
     var name = $('aName').value, email = $('aEmail').value, bad = validate(name, email);
     if (bad) { say($('aMsg'), bad, 'err'); return; }
-    $('aBtn').disabled = true;
-    sb.from('guests').insert({ name: name.trim(), email: email.trim() }).select().then(function (r) {
-      $('aBtn').disabled = false;
+    $('aBtn').disabled = true; say($('aMsg'), 'Adding…');
+    try {
+      var r = await run(sb.from('guests').insert({ name: name.trim(), email: email.trim() }));
       if (r.error) { say($('aMsg'), friendly(r.error), 'err'); return; }
       $('aName').value = ''; $('aEmail').value = ''; say($('aMsg'), 'Added.', 'ok');
-      guests = r.data.concat(guests); render(); $('aName').focus();
-    });
+      await loadGuests(); $('aName').focus();
+    } catch (err) {
+      say($('aMsg'), SLOW, 'err'); loadGuests(); // it may still have saved – refresh the list
+    } finally { $('aBtn').disabled = false; }
   });
 
-  function saveEdit(id, name, email, msgEl) {
+  async function saveEdit(id, name, email, msgEl) {
     var bad = validate(name, email);
     if (bad) { say(msgEl, bad, 'err'); return; }
-    sb.from('guests').update({ name: name.trim(), email: email.trim() }).eq('id', id).select().then(function (r) {
+    try {
+      var r = await run(sb.from('guests').update({ name: name.trim(), email: email.trim() }).eq('id', id));
       if (r.error) { say(msgEl, friendly(r.error), 'err'); return; }
-      guests = guests.map(function (g) { return g.id === id ? r.data[0] : g; });
-      editingId = null; render();
-    });
+      editingId = null; await loadGuests(); render();
+    } catch (err) { say(msgEl, SLOW, 'err'); }
   }
-  function remove(id) {
-    sb.from('guests').delete().eq('id', id).then(function (r) {
+  async function remove(id) {
+    try {
+      var r = await run(sb.from('guests').delete().eq('id', id));
       if (r.error) { say($('listMsg'), friendly(r.error), 'err'); return; }
-      guests = guests.filter(function (g) { return g.id !== id; }); confirmId = null; render();
-    });
+      confirmId = null; await loadGuests(); render();
+    } catch (err) { say($('listMsg'), SLOW, 'err'); }
   }
 
   /* ---------- render ---------- */
