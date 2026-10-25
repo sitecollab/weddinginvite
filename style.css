@@ -106,3 +106,6 @@ section{position:relative}
 .rm .still{opacity:1}
 .rm .fx{opacity:1;transform:none}
 .rm .hint{opacity:1}
+
+.admin-link{display:block;margin-top:10px;font-size:9px;letter-spacing:.2em;color:inherit;opacity:.6;text-decoration:none;text-transform:uppercase}
+.admin-link:hover{opacity:1}
