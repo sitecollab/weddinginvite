@@ -2,7 +2,23 @@
   'use strict';
   var SUPABASE_URL = 'https://evqqmydxrbqryvxlpmsa.supabase.co';
   var SUPABASE_KEY = 'sb_publishable_5Gq3scUuu2cbg0_Fzkp6uQ_6OgQvk8b'; // public (publishable) key – data is protected by Row Level Security
-  var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, lock: function (_n, _t, fn) { return fn(); } } });
+  // A stalled connection (seen in some browsers after idle) is aborted after 12s and retried once on a fresh connection.
+  var postRetried = false;
+  function fetchRetry(input, init) {
+    function attempt(n) {
+      var ctrl = new AbortController(), timer = setTimeout(function () { ctrl.abort(); }, 12000);
+      return fetch(input, Object.assign({}, init, { signal: ctrl.signal })).then(
+        function (r) { clearTimeout(timer); return r; },
+        function (err) {
+          clearTimeout(timer);
+          console.warn('[guest list] request failed (' + (err && err.name) + '), ' + (n < 1 ? 'retrying' : 'giving up'));
+          if (n < 1) { if (init && /^POST$/i.test(init.method || '')) postRetried = true; return attempt(n + 1); }
+          throw err;
+        });
+    }
+    return attempt(0);
+  }
+  var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { global: { fetch: fetchRetry }, auth: { persistSession: true, autoRefreshToken: true, lock: function (_n, _t, fn) { return fn(); } } });
 
   var $ = function (id) { return document.getElementById(id); };
   var loginEl = $('login'), appEl = $('app'), listEl = $('list');
@@ -35,7 +51,7 @@
 
   /* ---------- data ---------- */
   function run(p) { // never let a request hang the UI
-    return Promise.race([p, new Promise(function (_, rej) { setTimeout(function () { rej(new Error('timeout')); }, 15000); })]);
+    return Promise.race([p, new Promise(function (_, rej) { setTimeout(function () { rej(new Error('timeout')); }, 40000); })]);
   }
   var SLOW = 'That took too long. Please check your connection and try again.';
 
@@ -61,9 +77,13 @@
     e.preventDefault();
     var name = $('aName').value, email = $('aEmail').value, bad = validate(name, email);
     if (bad) { say($('aMsg'), bad, 'err'); return; }
-    $('aBtn').disabled = true; say($('aMsg'), 'Adding…');
+    $('aBtn').disabled = true; say($('aMsg'), 'Adding…'); postRetried = false;
     try {
       var r = await run(sb.from('guests').insert({ name: name.trim(), email: email.trim() }));
+      if (r.error && r.error.code === '23505') { // may be our own retried request that had already saved
+        await loadGuests();
+        if (postRetried) r = { error: null };
+      }
       if (r.error) { say($('aMsg'), friendly(r.error), 'err'); return; }
       $('aName').value = ''; $('aEmail').value = ''; say($('aMsg'), 'Added.', 'ok');
       await loadGuests(); $('aName').focus();
